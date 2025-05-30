@@ -1,0 +1,285 @@
+import asyncio
+from pathlib import Path
+from typing import Any
+
+import typer
+import yaml
+from scrapli import AsyncScrapli
+from scrapli.exceptions import ScrapliException
+
+from netcollector.config.inventory import Device, Inventory
+
+
+class DeviceCollector:
+    """Async device collector using scrapli, driven by a YAML command configuration."""
+
+    def __init__(
+        self,
+        output_dir: Path = Path("_artifacts"),
+        commands_file: Path = Path("src/netcollector/collector/commands.yaml"),
+    ) -> None:
+        self.output_dir = output_dir
+        self.output_dir.mkdir(exist_ok=True)
+        self.commands_config = self._load_commands_config(commands_file)
+
+    def _load_commands_config(self, commands_file: Path) -> dict[str, Any]:
+        """Load command configurations from a YAML file."""
+        if not commands_file.exists():
+            typer.echo(
+                f"Warning: Commands file {commands_file} not found. No commands will be run.",
+                err=True,
+            )
+            return {}
+        try:
+            with open(commands_file, encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+                if config is None:  # Handle empty YAML file
+                    typer.echo(
+                        f"Warning: Commands file {commands_file} is empty. No commands will be run.",
+                        err=True,
+                    )
+                    return {}
+                return config
+        except Exception as e:
+            typer.echo(f"Error loading commands file {commands_file}: {e}", err=True)
+            return {}
+
+    def _get_platform_command_configs(self, platform: str) -> dict[str, dict[str, Any]]:
+        """Get platform-specific command configurations from the loaded YAML."""
+        if not self.commands_config:
+            return {}
+        return self.commands_config.get(platform, {})
+
+    async def collect_device_data(self, device: Device) -> dict[str, Any]:
+        """Collect data from a single device based on YAML configuration."""
+        conn_params = {
+            "host": device.host,
+            "platform": device.platform,
+            "transport": "asyncssh",
+            "auth_username": device.auth_username,
+            "auth_password": device.auth_password.get_secret_value(),
+            "auth_strict_key": device.auth_strict_key,
+        }
+
+        if device.port:
+            conn_params["port"] = device.port
+
+        collected_commands_results = {}
+        platform_command_configs = self._get_platform_command_configs(device.platform)
+
+        base_return_data = {
+            "hostname": device.hostname,
+            "platform": device.platform,
+            "host": device.host,
+        }
+
+        if not platform_command_configs:
+            return {
+                **base_return_data,
+                "collection_status": "no_commands_for_platform",
+                "commands": {},
+            }
+
+        try:
+            async with AsyncScrapli(**conn_params) as conn:
+                for command_name, cmd_config in platform_command_configs.items():
+                    command_str = cmd_config.get("command")
+                    textfsm_template_value = cmd_config.get("textfsm_template")
+
+                    if not command_str:
+                        collected_commands_results[command_name] = {
+                            "command": None,
+                            "error": "Command string not defined in YAML configuration",
+                            "failed": True,
+                        }
+                        continue
+
+                    try:
+                        response = await conn.send_command(command_str)
+                        command_result_data = {
+                            "command": command_str,
+                            "output": response.result,
+                            "failed": response.failed,
+                            "elapsed_time": response.elapsed_time,
+                        }
+                        if not response.failed and response.result:
+                            if textfsm_template_value:
+                                try:
+                                    parsed_output = response.textfsm_parse_output()
+                                    command_result_data["parsed_output"] = parsed_output
+                                except ScrapliException as pe:
+                                    command_result_data["parsed_output_error"] = (
+                                        f"TextFSM parsing error with template '{textfsm_template_value}': {pe!s}"
+                                    )
+                                except Exception as gen_pe:
+                                    command_result_data["parsed_output_error"] = (
+                                        f"General TextFSM parsing error with template "
+                                        f"'{textfsm_template_value}': {gen_pe!s}"
+                                    )
+
+                        collected_commands_results[command_name] = command_result_data
+                    except ScrapliException as e:
+                        collected_commands_results[command_name] = {
+                            "command": command_str,
+                            "error": str(e),
+                            "failed": True,
+                        }
+
+            collection_status = "success"
+            if not collected_commands_results and platform_command_configs:
+                collection_status = "all_commands_failed_execution"
+            elif collected_commands_results:
+                all_failed = True
+                any_failed = False
+                for r_val in collected_commands_results.values():
+                    if r_val.get("failed"):
+                        any_failed = True
+                    else:
+                        all_failed = False
+                if all_failed:
+                    collection_status = "all_commands_failed_execution"
+                elif any_failed:
+                    collection_status = "partial_success"
+
+            return {
+                **base_return_data,
+                "collection_status": collection_status,
+                "commands": collected_commands_results,
+            }
+
+        except Exception as e:
+            return {
+                **base_return_data,
+                "collection_status": "failed",
+                "error": str(e),
+                "commands": collected_commands_results,
+            }
+
+    async def save_device_data(self, device_data: dict[str, Any]) -> None:
+        """Save device data. Saves each command's output."""
+        hostname = device_data["hostname"]
+        platform = device_data["platform"]
+        host = device_data["host"]
+        collection_status = device_data.get("collection_status", "unknown")
+
+        if collection_status == "failed" and "commands" not in device_data.get(
+            "error", ""
+        ):
+            error_info = {
+                "hostname": hostname,
+                "platform": platform,
+                "host": host,
+                "collection_status": "failed",
+                "error": device_data.get("error", "Unknown error during collection"),
+            }
+            error_yaml_file = self.output_dir / f"{hostname}_collection_error.yaml"
+            with Path.open(error_yaml_file, "w", encoding="utf-8") as f:
+                yaml.dump(error_info, f, default_flow_style=False, indent=2)
+
+            error_raw_file = self.output_dir / f"{hostname}_collection_error.raw"
+            with Path.open(error_raw_file, "w", encoding="utf-8") as f:
+                f.write(f"# Error collecting data for {hostname}\n")
+                f.write(f"# Platform: {platform}\n# Host: {host}\n")
+                f.write(f"Error: {device_data.get('error', 'Unknown error')}\n")
+            return
+
+        commands_results = device_data.get("commands", {})
+        if not commands_results:
+            summary_info = {
+                "hostname": hostname,
+                "platform": platform,
+                "host": host,
+                "collection_status": collection_status,
+                "message": "No command data collected or to save for this device.",
+            }
+            if collection_status == "no_commands_for_platform":
+                summary_info["message"] = (
+                    "No commands configured for this platform in the commands YAML."
+                )
+
+            summary_yaml_file = self.output_dir / f"{hostname}_summary.yaml"
+            with Path.open(summary_yaml_file, "w", encoding="utf-8") as f:
+                yaml.dump(summary_info, f, default_flow_style=False, indent=2)
+            return
+
+        for command_name, cmd_result in commands_results.items():
+            safe_command_name = command_name.replace(" ", "_").replace("/", "_")
+
+            yaml_data_to_save = {
+                "hostname": hostname,
+                "platform": platform,
+                "host": host,
+                "command_name": command_name,
+                **cmd_result,
+            }
+            yaml_file = self.output_dir / f"{hostname}_{safe_command_name}.yaml"
+            with Path.open(yaml_file, "w", encoding="utf-8") as f:
+                yaml.dump(yaml_data_to_save, f, default_flow_style=False, indent=2)
+
+            raw_file = self.output_dir / f"{hostname}_{safe_command_name}.raw"
+            with Path.open(raw_file, "w", encoding="utf-8") as f:
+                command = cmd_result.get("command", "N/A")
+                f.write(f"# Raw output for command '{command}' on {hostname}\n")
+                f.write(f"# Command Key: {command_name}\n")
+                f.write(f"# Platform: {platform}\n# Host: {host}\n")
+                f.write("=" * 80 + "\n\n")
+                if cmd_result.get("failed"):
+                    f.write(
+                        f"Error: {cmd_result.get('error', 'Command failed without specific error')}\n"
+                    )
+                else:
+                    f.write(cmd_result.get("output", "No output recorded.") + "\n")
+                f.write("\n" + "=" * 80 + "\n\n")
+
+
+async def collect_inventory_data(
+    inventory: Inventory, batch_size: int = 10
+) -> list[dict[str, Any]]:
+    """Collect data from all devices in the inventory using batching."""
+    collector = DeviceCollector()
+    all_results = []
+
+    devices = inventory.devices
+    for i in range(0, len(devices), batch_size):
+        batch = devices[i : i + batch_size]
+        typer.echo(f"Processing batch {i // batch_size + 1}: {len(batch)} devices")
+
+        tasks = [collector.collect_device_data(device) for device in batch]
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for j, result_or_exc in enumerate(batch_results):
+            device = batch[j]
+            if isinstance(result_or_exc, Exception):
+                error_result = {
+                    "hostname": device.hostname,
+                    "platform": device.platform,
+                    "host": device.host,
+                    "collection_status": "failed",
+                    "error": str(result_or_exc),
+                    "commands": {},
+                }
+                all_results.append(error_result)
+                await collector.save_device_data(error_result)
+                typer.echo(
+                    f"  ❌ {device.hostname}: Unhandled exception during collection - "
+                    f"{result_or_exc!s}"
+                )
+            else:
+                all_results.append(result_or_exc)
+                await collector.save_device_data(result_or_exc)
+
+                hostname = result_or_exc["hostname"]
+                status_val = result_or_exc.get("collection_status", "unknown")
+                status_icon = "❓"
+                if status_val == "success":
+                    status_icon = "✅"
+                elif status_val == "no_commands_for_platform":
+                    status_icon = "ℹ️"
+                elif status_val == "partial_success":
+                    status_icon = "⚠️"
+                elif status_val in ["failed", "all_commands_failed_execution"]:
+                    status_icon = "❌"
+
+                typer.echo(f"  {status_icon} {hostname}: Collection {status_val}")
+
+    return all_results

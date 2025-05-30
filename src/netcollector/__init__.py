@@ -1,0 +1,1 @@
+"""Netcollector package initializer."""

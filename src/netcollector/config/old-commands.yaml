@@ -1,0 +1,72 @@
+---
+arista_eos: {}
+cisco_iosxe: {}
+cisco_iosxr: {}
+juniper_junos: {}
+cisco_nxos:
+  arp:
+    command: show ip arp detail vrf all
+    textfsm_template: show ip arp detail vrf all
+    output_keys: [interface, vrf, ip_address, mac_address]
+  interfaces:
+    command: show interface
+    textfsm_template: show interface
+    output_keys:
+      - interface
+      - description
+      - status
+      - mode
+      - mac_address
+      - mtu
+      - delay
+      - speed
+      - duplex
+    rename_keys: {link_status: status}
+    json_consolidation:
+      mdata:
+        mtu: {type: int}
+        delay: {type: str, rename: dly}
+        speed: {type: str}
+        duplex: {type: str}
+  mac addresses:
+    command: show mac address-table dynamic local
+    textfsm_template: show mac address-table
+    rename keys:
+      ports: interface
+    output_keys: [interface, mac_address, vlan_id]
+  neighbors_cdp:
+    command: show cdp neighbors detail
+    textfsm_template: show dp neighbors detail
+    rename keys:
+      local_interface: interface
+      chassis_id: neighbor_chassis_id
+    output keys:
+      - interface
+      - neighbor_name
+      - neighbor_interface
+      - neighbor_chassis_id
+      - neighbor_description
+      - platform
+  neighbors_lldp:
+    command: show lldp neighbors detail
+    textfsm_template: show lldp neighbors detail
+    rename_keys:
+      local_interface: interface
+      chassis_id: neighbor_chassis_id
+  version:
+    output keys:
+      - interface
+      - neighbor_name
+      - neighbor_interface
+      - neighbor_chassls_ad
+      - neighbor_description
+    conmand: show version
+    textfsm_template: show version
+    output_keys:
+      - hostname
+      - platform
+      - serial
+      - os
+      - boot_image
+      - bios
+      - last_reboot_reason

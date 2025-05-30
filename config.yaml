@@ -1,0 +1,14 @@
+# config.yaml
+app_name: My Awesome CLI
+debug_mode: true
+port: 8000
+feature_flags:
+  - analytics_enabled
+  - caching_active
+database:
+  host: localhost
+  port: 5432
+  user: admin
+  password: mysecretpassword
+server_timeout_seconds: 30
+#logging not set, so uses defaults.

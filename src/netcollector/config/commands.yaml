@@ -1,0 +1,46 @@
+---
+platforms:
+  arista_eos:
+    interfaces:
+      command: "show interfaces"
+    version:
+      command: "show version"
+  cisco_iosxe:
+    interfaces:
+      command: "show interfaces"
+    version:
+      command: "show version"
+  cisco_iosxr:
+    interfaces:
+      command: "show interfaces"
+    version:
+      command: "show version"
+  juniper_junos:
+    interfaces:
+      command: "show interfaces"
+    version:
+      command: "show version"
+  cisco_nxos:
+    arp:
+      command: show ip arp detail vrf all
+      #textfsm_template: show ip arp detail vrf all
+      # output_keys: [interface, vrf, ip_address, mac_address]
+    interfaces:
+      command: show interface
+    mac addresses:
+      command: show mac address-table # dynamic local
+      rename keys:
+        ports: interface
+
+#    neighbors_cdp:
+#      command: show cdp neighbors detail
+#      rename keys:
+#        local_interface: interface
+#        chassis_id: neighbor_chassis_id
+#    neighbors_lldp:
+#      command: show lldp neighbors detail
+#      rename_keys:
+#        local_interface: interface
+#        chassis_id: neighbor_chassis_id
+    version:
+      command: show version

@@ -1,0 +1,12 @@
+---
+version: '3'
+
+tasks:
+  check:
+    cmds:
+      - uv run ruff check src/ --fix --unsafe-fixes
+      - uv run ruff check tests/ --fix --unsafe-fixes
+      - uv run ruff format .
+      - uv run ty check src/
+      - uv run coverage run -m pytest
+      - uv run coverage report -m
