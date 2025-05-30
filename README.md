@@ -25,7 +25,7 @@ A modern, high-performance network automation tool for collecting and analyzing 
 ```bash
 # Assumes Linux or macOS
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install "git+https://github.com/ryanmerolle/netcollector" --forc
+uv tool install "git+https://github.com/ryanmerolle/netcollector" --force
 ```
 
 ### Basic Usage
